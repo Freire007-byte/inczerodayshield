@@ -258,17 +258,10 @@ export default function App() {
   const [expanded, setExpanded]         = useState(null);
   const [filterSev, setFilterSev]       = useState("ALL");
   const [toolCat, setToolCat]           = useState("ALL");
-  const [apiKey, setApiKey]             = useState(
-    () => localStorage.getItem("inc_api_key") || ""
-  );
-  const [showKey, setShowKey]           = useState(false);
-
-  function saveKey(k) { setApiKey(k); localStorage.setItem("inc_api_key", k); }
 
   const checks = tab === "url" ? URL_CHECKS : tab === "contract" ? CONTRACT_CHECKS : CODE_CHECKS;
 
   async function runScan() {
-    if (!apiKey.trim()) { setError("Coloca a tua Anthropic API Key nas configurações (ícone da chave acima)."); return; }
     if (tab === "url" && !url.trim()) { setError("Insere uma URL ou IP para escanear."); return; }
     if (tab === "contract" && !contract.trim()) { setError("Cola o código Solidity para auditar."); return; }
     if (tab === "source" && !sourceCode.trim()) { setError("Cola o código fonte para auditar."); return; }
@@ -469,27 +462,18 @@ Responde APENAS JSON válido:
 }`;
 
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      const res = await fetch("http://localhost:3001/api/analyze", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01",
-          "anthropic-dangerous-direct-browser-access": "true",
-        },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-6",
-          max_tokens: 8192,
-          messages: [{ role: "user", content: prompt }],
-        }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt }),
       });
       const data = await res.json();
-      if (data.error) throw new Error(data.error.message);
+      if (data.error) throw new Error(data.error);
       const text = data.content?.map(i => i.text || "").join("") || "";
       const parsed = JSON.parse(text.replace(/```json|```/g, "").trim());
       setResults(parsed);
     } catch (e) {
-      setError(`Erro Claude API: ${e.message}`);
+      setError(`Erro: ${e.message}`);
     }
     setLoading(false); setLoadingMsg("");
   }
@@ -529,23 +513,6 @@ Responde APENAS JSON válido:
         </h1>
         <div style={{ fontSize:10, color:"#444", marginTop:4, letterSpacing:3 }}>
           v2.0 — TESTES REAIS — {URL_CHECKS.length + CONTRACT_CHECKS.length} CHECKS — NMAP · GHIDRA · DDoS · OWASP
-        </div>
-      </div>
-
-      {/* ── API KEY BAR ── */}
-      <div style={{ maxWidth:700, margin:"0 auto 20px", ...S.card }}>
-        <div style={{ fontSize:10, color: apiKey ? "#30d158" : "#ff2d55", letterSpacing:2, marginBottom:8 }}>
-          {apiKey ? "ANTHROPIC API KEY CONFIGURADA" : "ANTHROPIC API KEY NECESSÁRIA — console.anthropic.com"}
-        </div>
-        <div style={{ display:"flex", gap:8 }}>
-          <input type={showKey ? "text" : "password"} value={apiKey}
-            onChange={e => saveKey(e.target.value)}
-            placeholder="sk-ant-api03-..."
-            style={{ ...S.input, flex:1, fontSize:12 }} />
-          <button onClick={() => setShowKey(v => !v)}
-            style={{ ...S.btn("#0d0d1a","1px solid #1a1a3a","#555"), padding:"12px 14px", fontSize:11 }}>
-            {showKey ? "OCULTAR" : "MOSTRAR"}
-          </button>
         </div>
       </div>
 

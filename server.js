@@ -6,6 +6,9 @@ import net from "net";
 import dns from "dns";
 import tls from "tls";
 import { URL } from "url";
+import { createRequire } from "module";
+const require = createRequire(import.meta.url);
+try { require("dotenv").config(); } catch {}
 
 const app = express();
 app.use(cors());
@@ -572,6 +575,39 @@ app.get("/api/probe", async (req, res) => {
     return res.status(408).json({ error: "Scan timeout — alvo demorou demasiado a responder" });
   }
   res.json(result);
+});
+
+// ─── Claude AI analysis endpoint ─────────────────────────────────────────────
+app.post("/api/analyze", async (req, res) => {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey || apiKey.includes("COLOCA_AQUI")) {
+    return res.status(500).json({ error: "ANTHROPIC_API_KEY não configurada no .env" });
+  }
+
+  const { prompt } = req.body;
+  if (!prompt) return res.status(400).json({ error: "prompt required" });
+
+  try {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-6",
+        max_tokens: 8192,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
+
+    const data = await response.json();
+    if (data.error) return res.status(400).json({ error: data.error.message });
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.listen(3001, () => {
