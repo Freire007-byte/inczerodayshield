@@ -291,7 +291,7 @@ export default function App() {
     }
 
     // ── STEP 2: feed real data to Claude ──────────────────────────────────
-    setLoadingMsg("PASSO 2/2 — IA A ANALISAR DADOS REAIS...");
+    setLoadingMsg(tab === "url" ? "PASSO 2/2 — IA A ANALISAR DADOS REAIS..." : "A ANALISAR COM IA...");
 
     const probeSection = probeData ? `
 ╔══════════════════════════════════════════════╗
