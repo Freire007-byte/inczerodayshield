@@ -276,9 +276,13 @@ export default function App() {
       try {
         const res = await fetch(`http://localhost:3001/api/probe?target=${encodeURIComponent(url)}`);
         probeData = await res.json();
+        if (probeData?.error) {
+          setError(`Erro no scan: ${probeData.error}`);
+          setLoading(false); return;
+        }
         setRawProbe(probeData);
       } catch {
-        setError("Backend de scan não está a correr. Abre um terminal e corre: node server.js");
+        setError("Backend não está a correr. Abre um terminal em C:\\Users\\Loja\\inczerodayshield e corre: npm run dev");
         setLoading(false); return;
       }
     }

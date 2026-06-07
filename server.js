@@ -65,6 +65,10 @@ async function scanPorts(host) {
 // ─── HTTP helpers ────────────────────────────────────────────────────────────
 function fetchReq(rawUrl, method = "GET", extraHeaders = {}, timeout = 10000) {
   return new Promise((resolve) => {
+    let done = false;
+    const finish = (val) => { if (!done) { done = true; resolve(val); } };
+    // Hard deadline — guarantees resolve even if socket hangs mid-response
+    const hardTimer = setTimeout(() => finish({ ok: false, timeout: true }), timeout);
     try {
       const u = new URL(rawUrl);
       const mod = u.protocol === "https:" ? https : http;
@@ -79,12 +83,12 @@ function fetchReq(rawUrl, method = "GET", extraHeaders = {}, timeout = 10000) {
       }, (res) => {
         res.setEncoding("utf8");
         res.on("data", (d) => { body += d; if (body.length > 80000) req.destroy(); });
-        res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, body, ok: true }));
+        res.on("end", () => { clearTimeout(hardTimer); finish({ status: res.statusCode, headers: res.headers, body, ok: true }); });
       });
-      req.on("error", (e) => resolve({ ok: false, err: e.message }));
-      req.on("timeout", () => { req.destroy(); resolve({ ok: false, timeout: true }); });
+      req.on("error", () => { clearTimeout(hardTimer); finish({ ok: false, timeout: true }); });
+      req.on("timeout", () => { req.destroy(); });
       req.end();
-    } catch (e) { resolve({ ok: false, err: e.message }); }
+    } catch (e) { clearTimeout(hardTimer); finish({ ok: false, err: e.message }); }
   });
 }
 
@@ -147,7 +151,7 @@ function checkSSL(hostname, port = 443) {
 
 // ─── DNS deep check ──────────────────────────────────────────────────────────
 async function checkDNS(hostname) {
-  const safe = (fn) => fn.catch(() => []);
+  const safe = (fn) => Promise.race([fn.catch(() => []), new Promise(r => setTimeout(() => r([]), 5000))]);
   const dmarcHost = `_dmarc.${hostname}`;
   const [mx, txt, a, aaaa, ns, dmarcTxt] = await Promise.all([
     safe(dns.promises.resolveMx(hostname)),
@@ -421,41 +425,42 @@ app.get("/api/probe", async (req, res) => {
   console.log(`\n[SCAN START] ${hostname} — ${new Date().toISOString()}`);
 
   // hard timeout — respond after 55s with whatever we have
-  const scanTimeout = new Promise(resolve => setTimeout(() => resolve("TIMEOUT"), 55000));
+  const scanTimeout = new Promise(resolve => setTimeout(() => resolve("TIMEOUT"), 90000));
 
   async function runScan() {
   const t0 = Date.now();
   const lap = (label) => console.log(`  [${label}] ${Date.now()-t0}ms`);
 
   // Phase 1 — all parallel probes
+  // Phase 1a — lightweight probes (fast, don't spam the target)
   const [
     getResult,
     sslResult,
     dnsResult,
-    pathsResult,
     httpRedirect,
     portScan,
-    rateLimit,
-    httpMethods,
     slowloris,
     subdomains,
-    corsTest,
-    openRedirect,
   ] = await Promise.all([
     fetchReq(target, "GET", {}, 10000).then(r => { lap("GET"); return r; }),
     checkSSL(hostname).then(r => { lap("SSL"); return r; }),
     checkDNS(hostname).then(r => { lap("DNS"); return r; }),
-    checkPaths(base).then(r => { lap("PATHS"); return r; }),
     fetchReq(`http://${hostname}/`, "GET", {}, 6000).then(r => { lap("HTTP"); return r; }),
     scanPorts(hostname).then(r => { lap("PORTS"); return r; }),
-    testRateLimit(base, "/", 25).then(r => { lap("RATELIMIT"); return r; }),
-    checkMethods(target).then(r => { lap("METHODS"); return r; }),
     testSlowloris(hostname, 443).then(r => { lap("SLOWLORIS"); return r; }),
     checkSubdomains(hostname).then(r => { lap("SUBDOMAINS"); return r; }),
+  ]);
+  lap("PHASE1a DONE");
+
+  // Phase 1b — heavier probes (separated to avoid triggering rate limits)
+  const [pathsResult, httpMethods, rateLimit, corsTest, openRedirect] = await Promise.all([
+    checkPaths(base).then(r => { lap("PATHS"); return r; }),
+    checkMethods(target).then(r => { lap("METHODS"); return r; }),
+    testRateLimit(base, "/", 15).then(r => { lap("RATELIMIT"); return r; }),
     testCORS(base, hostname).then(r => { lap("CORS"); return r; }),
     testOpenRedirect(base).then(r => { lap("OPENREDIRECT"); return r; }),
   ]);
-  lap("PHASE1 DONE");
+  lap("PHASE1b DONE");
 
   // Phase 2 — depends on getResult.body
   const [jsSecrets, techStack] = await Promise.all([
