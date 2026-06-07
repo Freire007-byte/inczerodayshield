@@ -243,6 +243,130 @@ function catColor(id) { return CATEGORIES[id[0]]?.color || "#888"; }
 
 // ─── main ────────────────────────────────────────────────────────────────────
 
+function analyzeProbe(probeData, checks) {
+  const h = probeData.headers || {};
+  const ssl = probeData.ssl || {};
+  const dns = probeData.dns || {};
+  const ports = probeData.ports || {};
+  const paths = probeData.paths || {};
+  const cdn = probeData.cdn || {};
+  const rateLimit = probeData.rateLimit || {};
+  const slowloris = probeData.slowloris || {};
+  const cors = probeData.cors || {};
+  const jsSecrets = probeData.jsSecrets || {};
+  const openRedirect = probeData.openRedirect || {};
+  const subdomains = probeData.subdomains || {};
+  const http = probeData.http || {};
+
+  const findings = checks.map(c => {
+    let status = "WARNING", detail = "", fix = "";
+    switch (c.id) {
+      case "N01":
+        if (!ssl.ok) { status="WARNING"; detail="SSL não verificável."; fix="Garante HTTPS ativo na porta 443."; }
+        else if (ssl.isWeakProto || ssl.isWeakCipher) { status="VULNERABLE"; detail=`Protocolo: ${ssl.protocol} ${ssl.isWeakProto?"← FRACO":""} | Cipher: ${ssl.cipher} ${ssl.isWeakCipher?"← FRACO":""}`; fix="Desativa TLS 1.0/1.1. Usa apenas TLS 1.2+ com ciphers ECDHE/AES-GCM."; }
+        else { status="OK"; detail=`TLS ${ssl.protocol} com ${ssl.cipher}.`; } break;
+      case "N02":
+        if (ssl.selfSigned) { status="VULNERABLE"; detail=`Certificado autoassinado. Expira: ${ssl.expiry}.`; fix="Instala certificado de CA válida (Let's Encrypt é gratuito)."; }
+        else if (ssl.daysLeft < 0) { status="VULNERABLE"; detail=`Certificado EXPIRADO há ${Math.abs(ssl.daysLeft)} dias.`; fix="Renova o certificado imediatamente."; }
+        else if (ssl.daysLeft < 30) { status="WARNING"; detail=`Expira em ${ssl.daysLeft} dias (${ssl.expiry}).`; fix="Renova em breve. Configura renovação automática com certbot."; }
+        else if (!ssl.ok) { status="WARNING"; detail="Não foi possível verificar SSL."; fix="Verifica se HTTPS está configurado."; }
+        else { status="OK"; detail=`Válido ${ssl.daysLeft} dias. Emissor: ${ssl.issuer}.`; } break;
+      case "N03":
+        if (!h.hsts) { status="VULNERABLE"; detail="Strict-Transport-Security AUSENTE — SSLStrip possível."; fix="Adiciona: Strict-Transport-Security: max-age=31536000; includeSubDomains; preload"; }
+        else { status="OK"; detail=`HSTS: ${h.hsts}`; } break;
+      case "N04": {
+        const miss = [!h.csp&&"CSP",!h.xFrameOptions&&"X-Frame-Options",!h.xContentTypeOptions&&"X-Content-Type-Options",!h.referrerPolicy&&"Referrer-Policy"].filter(Boolean);
+        if (miss.length >= 2) { status="VULNERABLE"; detail=`Headers ausentes: ${miss.join(", ")}`; fix=`Adiciona os headers: ${miss.join(", ")}`; }
+        else if (miss.length===1) { status="WARNING"; detail=`Header ausente: ${miss[0]}`; fix=`Adiciona ${miss[0]}`; }
+        else { status="OK"; detail="Principais security headers presentes."; } break; }
+      case "N05":
+        if (cors.vulnerable) { status="VULNERABLE"; detail=`CORS aceita origens maliciosas: ${cors.vulnerableOrigins?.map(o=>o.origin).join(", ")}`; fix="Restringe Access-Control-Allow-Origin a domínios específicos confiáveis."; }
+        else { status="OK"; detail="CORS não aceita origens maliciosas testadas."; } break;
+      case "N06":
+        if (http.server||http.poweredBy) { status="VULNERABLE"; detail=`Server: ${http.server||"N/A"} | X-Powered-By: ${http.poweredBy||"N/A"}`; fix="Remove/oculta os headers Server e X-Powered-By."; }
+        else { status="OK"; detail="Nenhum header de versão exposto."; } break;
+      case "N07":
+        if (!probeData.redirect?.redirectsToHTTPS) { status="VULNERABLE"; detail=`HTTP não redireciona para HTTPS. Status: ${probeData.redirect?.httpStatus||"sem resposta"}`; fix="Configura redirect 301 de HTTP para HTTPS."; }
+        else { status="OK"; detail=`Redireciona HTTP→HTTPS (${probeData.redirect?.httpStatus}).`; } break;
+      case "N08":
+        if (h.setCookie) { status="WARNING"; detail="Cookies presentes — verifica Secure/HttpOnly/SameSite manualmente."; fix="Garante Secure; HttpOnly; SameSite=Strict em todos os cookies."; }
+        else { status="OK"; detail="Nenhum cookie nas respostas testadas."; } break;
+      case "N09": {
+        const dm=[!dns.hasSPF&&"SPF",!dns.hasDKIM&&"DKIM",!dns.hasDMARC&&"DMARC"].filter(Boolean);
+        if (dm.length>0) { status=dm.length>=2?"VULNERABLE":"WARNING"; detail=`Registos ausentes: ${dm.join(", ")}. SPF: ${dns.spfRecord||"AUSENTE"}`; fix=`Configura ${dm.join(", ")} para prevenir email spoofing.`; }
+        else { status="OK"; detail=`SPF/DKIM/DMARC configurados. SPF: ${dns.spfRecord}`; } break; }
+      case "N10": status="WARNING"; detail="DNSSEC não verificável via HTTP probe."; fix="Ativa DNSSEC no teu registrar."; break;
+      case "N11": status=http.reachable?"OK":"WARNING"; detail=http.reachable?`Online. HTTP ${http.status}. CDN: ${cdn.detected||"Nenhum"}.`:"Servidor não respondeu."; break;
+      case "D01": {
+        const udp=ports.open?.filter(p=>[53,123,161,1900,11211].includes(p.port))||[];
+        if(udp.length>0){status="VULNERABLE";detail=`Portas de amplificação: ${udp.map(p=>`${p.port}/${p.svc}`).join(", ")}`;fix="Bloqueia acesso externo a serviços UDP (DNS recursivo, NTP, SNMP, Memcached).";}
+        else{status="OK";detail="Nenhuma porta UDP de amplificação detetada.";} break;}
+      case "D02":
+        if(!cdn.cloudflare&&!cdn.vercel&&!cdn.fastly){status="VULNERABLE";detail=`IP direto exposto sem CDN. IPs: ${dns.a?.join(", ")||"N/A"}`;fix="Coloca o servidor atrás do Cloudflare (gratuito) para ocultar o IP real.";}
+        else{status="OK";detail=`Protegido por CDN: ${cdn.detected}.`;} break;
+      case "D03":
+        if(cdn.cloudflare||cdn.vercel||cdn.fastly){status="OK";detail=`WAF/CDN: ${cdn.detected}`;}
+        else{status="VULNERABLE";detail="Nenhum WAF/CDN detetado.";fix="Ativa Cloudflare para proteção L3/L4/L7.";} break;
+      case "D04":
+        if(slowloris.vulnerable){status="VULNERABLE";detail=`Slowloris: ${slowloris.detail}`;fix="Configura timeout de conexões parciais (RequestReadTimeout no Apache, client_header_timeout no Nginx).";}
+        else{status="OK";detail=`Slowloris: ${slowloris.detail||"Servidor fechou conexões parciais."}`} break;
+      case "D05":
+        if(!rateLimit.rateLimited){status="VULNERABLE";detail=`${rateLimit.tested} requests sem rate limiting. Statuses: ${rateLimit.statuses?.join(", ")}`;fix="Implementa rate limiting (nginx limit_req, express-rate-limit, Cloudflare Rate Limiting).";}
+        else{status="OK";detail=`Rate limiting ativo após ${rateLimit.tested} requests.`;} break;
+      case "D06":case"D07":case"D08":case"D09":case"D10":case"D11":case"D12":
+        status="WARNING";detail=`${c.name} requer análise interna do servidor.`;fix="Implementa timeouts e limites específicos no servidor."; break;
+      case "W11":
+        if(openRedirect.vulnerable){status="VULNERABLE";detail=`Open redirect em: ${openRedirect.params?.map(p=>`?${p.param}=`).join(", ")}`;fix="Usa whitelist de domínios permitidos. Nunca redirecionas para URLs externas sem validação.";}
+        else{status="OK";detail="Nenhum open redirect detetado nos parâmetros testados.";} break;
+      case "W13":
+        if(!h.xFrameOptions){status="VULNERABLE";detail="X-Frame-Options AUSENTE — clickjacking possível.";fix="Adiciona: X-Frame-Options: DENY";}
+        else{status="OK";detail=`X-Frame-Options: ${h.xFrameOptions}`;} break;
+      case "W16": {
+        const lp=paths.exposed?.filter(p=>p.path.endsWith("/")||p.status===200)||[];
+        if(lp.length>0){status="VULNERABLE";detail=`Paths expostos: ${lp.map(p=>`${p.path}[${p.status}]`).join(", ")}`;fix="Desativa directory listing (Options -Indexes no Apache, autoindex off no Nginx).";}
+        else{status="OK";detail="Nenhum diretório com listagem detetada.";} break;}
+      case "W17": {
+        const bp=paths.exposed?.filter(p=>[".bak",".sql",".zip",".tar",".old",".backup",".dump"].some(e=>p.path.includes(e)))||[];
+        if(bp.length>0){status="VULNERABLE";detail=`Backups expostos: ${bp.map(p=>`${p.path}[${p.status}]`).join(", ")}`;fix="Remove ficheiros de backup do webroot.";}
+        else{status="OK";detail="Nenhum ficheiro de backup encontrado.";} break;}
+      case "W18":
+        if(!h.cacheControl){status="WARNING";detail="Cache-Control ausente.";fix="Adiciona Cache-Control: no-store para endpoints sensíveis.";}
+        else{status="OK";detail=`Cache-Control: ${h.cacheControl}`;} break;
+      case "W19":
+        if(subdomains.sensitive?.length>0){status="WARNING";detail=`Subdomínios sensíveis: ${subdomains.sensitive.map(s=>s.sub).join(", ")}`;fix="Verifica CNAMEs de serviços desativados.";}
+        else{status="OK";detail=`${subdomains.count||0} subdomínios, nenhum sensível.`;} break;
+      case "A01": {
+        const ap=paths.exposed?.filter(p=>["/admin","/admin/","/wp-admin","/phpmyadmin","/panel","/dashboard","/manager","/console","/control"].includes(p.path))||[];
+        if(ap.length>0){status="VULNERABLE";detail=`Admin exposto: ${ap.map(p=>`${p.path}[${p.status}]`).join(", ")}`;fix="Protege admin com autenticação forte e restrição por IP.";}
+        else{status="OK";detail="Nenhum painel de administração exposto.";} break;}
+      case "P01":
+        if(jsSecrets.found){status="VULNERABLE";detail=`${jsSecrets.count} secret(s) em JS: ${jsSecrets.findings?.map(f=>`[${f.type}] ${f.source}`).join(", ")}`;fix="Move chaves para variáveis de ambiente. Roga as chaves expostas.";}
+        else{status="OK";detail=`${jsSecrets.jsFilesScanned||0} ficheiros JS escaneados — nenhuma chave encontrada.`;} break;
+      case "P05":
+        if(!rateLimit.rateLimited){status="VULNERABLE";detail="Rate limiting ausente nos endpoints testados.";fix="Implementa rate limiting por IP e por token na API.";}
+        else{status="OK";detail="Rate limiting detetado.";} break;
+      case "I01": {
+        const dp=ports.dangerous||[];
+        if(dp.length>0){status="VULNERABLE";detail=`Portas perigosas: ${dp.map(p=>`${p.port}/${p.svc}`).join(", ")}`;fix="Fecha portas desnecessárias. Restringe DB/Redis/etc. a localhost.";}
+        else if((ports.open?.length||0)>3){status="WARNING";detail=`${ports.open.length} portas abertas: ${ports.open.map(p=>`${p.port}/${p.svc}`).join(", ")}`;fix="Fecha portas não utilizadas com firewall.";}
+        else{status="OK";detail=`Portas: ${ports.open?.map(p=>`${p.port}/${p.svc}`).join(", ")||"só HTTP/HTTPS"}.`;} break;}
+      default:
+        status="WARNING";detail=`${c.name} — requer testes ativos ou acesso ao código-fonte.`;fix="Usa ferramentas especializadas (OWASP ZAP, Burp Suite) para este vetor.";
+    }
+    return { id:c.id, severity:c.sev, name:c.name, status, detail, fix };
+  });
+
+  const vc=findings.filter(f=>f.status==="VULNERABLE"&&f.severity==="CRITICAL").length;
+  const vh=findings.filter(f=>f.status==="VULNERABLE"&&f.severity==="HIGH").length;
+  const vm=findings.filter(f=>f.status==="VULNERABLE"&&f.severity==="MEDIUM").length;
+  const score=Math.max(0,100-(vc*15)-(vh*8)-(vm*3));
+  const vl=findings.filter(f=>f.status==="VULNERABLE").map(f=>f.name);
+  const summary=vl.length===0
+    ?`${probeData.hostname} — Nenhuma vulnerabilidade crítica detetada. Score: ${score}/100. CDN: ${cdn.detected||"Nenhum"}. SSL: ${ssl.ok?"OK":"Falhou"}.`
+    :`${probeData.hostname} — ${vl.length} vulnerabilidades detetadas: ${vl.slice(0,5).join(", ")}${vl.length>5?` e mais ${vl.length-5}`:""}. Score: ${score}/100.`;
+  return { score, summary, findings };
+}
+
 export default function App() {
   const [section, setSection]           = useState("scanner");
   const [tab, setTab]                   = useState("url");
@@ -287,8 +411,15 @@ export default function App() {
       }
     }
 
-    // ── STEP 2: feed real data to Claude ──────────────────────────────────
-    setLoadingMsg(tab === "url" ? "PASSO 2/2 — IA A ANALISAR DADOS REAIS..." : "A ANALISAR COM IA...");
+    // ── STEP 2: URL tab — análise determinística local (sem API) ──────────
+    if (tab === "url") {
+      setLoadingMsg("PASSO 2/2 — A GERAR RELATÓRIO...");
+      setResults(analyzeProbe(probeData, checks));
+      setLoading(false); setLoadingMsg(""); return;
+    }
+
+    // ── STEP 2: contract/source tabs — análise IA ─────────────────────────
+    setLoadingMsg("A ANALISAR COM IA...");
 
     const probeSection = probeData ? `
 ╔══════════════════════════════════════════════╗
