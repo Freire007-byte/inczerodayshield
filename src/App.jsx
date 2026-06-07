@@ -243,6 +243,168 @@ function catColor(id) { return CATEGORIES[id[0]]?.color || "#888"; }
 
 // ─── main ────────────────────────────────────────────────────────────────────
 
+// ── Padrões de vulnerabilidade por linguagem ─────────────────────────────────
+const CODE_PATTERNS = {
+  V01: [/[`'"].*(?:SELECT|INSERT|UPDATE|DELETE).*\$\{/i, /\.query\s*\([^)]*\+/, /execute\s*\([^)]*%s/, /f["']SELECT.*\{/i, /cursor\.execute\s*\([^)]*%/],
+  V02: [/\b(exec|system|shell_exec|popen)\s*\([^)]*(?:req\.|_GET|_POST|input|user|param)/i, /child_process\.(exec|execSync|spawn)\s*\([^)]*(?:req\.|body\.|params\.|query\.)/,/subprocess\.(call|run|Popen)\s*\([^)]*(?:request\.|input|user)/i],
+  V03: [/pickle\.loads?\s*\(/, /yaml\.load\s*\((?!.*Loader)/, /unserialize\s*\(/, /ObjectInputStream/, /Marshal\.load/],
+  V04: [/render_template_string\s*\([^)]*(?:req\.|request\.|input|user)/, /Environment\(\)\.from_string/, /ejs\.render\s*\([^)]*req/, /nunjucks\.renderString\s*\([^)]*req/, /Handlebars\.compile\s*\([^)]*req/],
+  V05: [/(?:readFile|readFileSync|open|fopen|file_get_contents)\s*\([^)]*(?:req\.|_GET|_POST|params\.|body\.|query\.|input|user)/i, /path\.join\s*\([^)]*(?:req\.|params\.|query\.|body\.)/],
+  V06: [/(password|passwd|secret|api_?key|token|private_?key|access_?key|auth)\s*[=:]\s*["'][^"']{8,}/i, /AKIA[0-9A-Z]{16}/, /sk-[A-Za-z0-9]{48}/, /sk-ant-[A-Za-z0-9_-]{40}/],
+  V07: [/(?:parseXML|DOMParser|SAXParser|libxml|XMLReader)/, /loadXML/, /LIBXML_NOENT/],
+  V08: [/__proto__/, /constructor\s*\[\s*["']prototype/, /Object\.assign\s*\([^)]*(?:req\.|body\.|params\.)/, /merge\s*\([^)]*(?:req\.|body\.|params\.)/],
+  V09: [/innerHTML\s*=\s*[^"'`]*(?:req\.|params\.|query\.|body\.|user\.|input)/, /document\.write\s*\([^)]*(?:req\.|location\.|hash)/, /dangerouslySetInnerHTML/, /\.html\s*\([^)]*(?:req\.|params\.|query\.)/],
+  V10: [/(?:fetch|axios\.get|http\.get|requests\.get|urllib\.urlopen|curl_exec)\s*\([^)]*(?:req\.|params\.|query\.|body\.|url|host|endpoint)/i],
+  V11: [/app\.(post|put|delete|patch)\s*\(/, /router\.(post|put|delete|patch)\s*\(/],
+  V12: [/(?:md5|sha1)\s*\([^)]*(?:password|passwd)/i, /(?:password|passwd)\s*==\s*(?:req\.|input|user)/, /algorithm.*["']none["']/, /jwt\.sign\s*\([^)]*,\s*["']["']/, /Math\.random\s*\(\s*\).*(?:token|key|secret)/i],
+  V13: [/findById\s*\([^)]*(?:req\.|params\.|query\.)/, /getById\s*\([^)]*req\./, /WHERE.*id\s*=\s*(?:req\.|params\.|query\.)/i],
+  V14: [/new RegExp\s*\([^)]*\+/, /\/((?:[^/]*[+*]){2,})\//],
+  V15: [/(?:readFile|stat|access)\s*\([\s\S]{0,100}(?:writeFile|unlink|rename)\s*\(/],
+  V16: [/\beval\s*\([^)]*(?:req\.|params\.|query\.|body\.|user\.|input)/, /Function\s*\(\s*(?:req\.|params\.|query\.)/, /vm\.runInNewContext\s*\([^)]*req/],
+  V17: [/(?:res\.json|res\.send)\s*\([^)]*(?:err|error|stack|e\.message)/, /catch\s*\([^)]*\)\s*\{[^}]*res\.(?:json|send)\s*\([^)]*(?:err|error|e)\b/],
+  V18: [/(?:console\.log|logger\.\w+)\s*\([^)]*(?:req\.|params\.|query\.|body\.|request\.)/],
+  V19: [/"version"\s*:\s*"\^?0\.\d|"dependencies"\s*:\s*\{[\s\S]{0,2000}\}/],
+  V20: [/function\s+\w+\s*\([^)]*\)\s*\{(?![\s\S]{0,500}(?:isAdmin|hasRole|checkAuth|authorize|permission))/],
+  V21: [/\b(?:md5|sha1|sha-1|DES|RC4|AES-ECB)\s*\(|createCipher\b(?!iv)|Math\.random\s*\(\s*\).*(?:salt|nonce|iv)/i],
+  V22: [/res\.redirect\s*\([^)]*(?:req\.|params\.|query\.|body\.)/, /header\s*\(\s*["']Location["']\s*,\s*(?:req\.|request\.)/],
+  V23: [/(?:console\.log|print|logger)\s*\([^)]*(?:password|secret|token|key|credential)/i],
+  V24: [/console\.log\s*\([^)]*(?:password|secret|token)/, /\/\/\s*(?:TODO|FIXME|HACK).*(?:security|auth|vuln)/i, /\bdebugger\b/],
+  V25: [/setTimeout\s*\([^)]*user/, /setInterval\s*\([^)]*req\./],
+};
+
+const CONTRACT_PATTERNS = {
+  C01: [/\.call\s*\{[^}]*value[^}]*\}|\.transfer\s*\(|\.send\s*\(/, /\.call\s*\(/],
+  C02: [/function\s+\w+\s*\([^)]*\)\s*(?:external|public)(?![\s\S]{0,200}(?:onlyOwner|onlyRole|require\s*\(\s*msg\.sender|modifier))/],
+  C03: [/pragma solidity\s*\^?0\.[0-7]\.|uint\d*.*[+\-\*](?!.*SafeMath|.*unchecked)/],
+  C04: [/delegatecall\s*\(/, /\.delegatecall\s*\(/],
+  C05: [/selfdestruct\s*\(/, /suicide\s*\(/],
+  C06: [/\.call\s*\{[^}]*value[^}]*\}\s*\([^)]*(?:data|input|_data)/, /\.call\s*\([^)]*(?:data|input)/],
+  C07: [/function\s+initialize\s*\(.*\)\s*(?:external|public)(?!.*initializer)/],
+  C08: [/latestAnswer\s*\(\s*\)|latestRoundData\s*\(\s*\)(?![\s\S]{0,300}require)/],
+  C09: [/swap\s*\w*\s*\([^)]*\)(?![\s\S]{0,200}deadline)/, /amountOutMin\s*==\s*0|slippage.*100/],
+  C10: [/flashLoan|flashBorrow|callback.*IFlash/],
+  C11: [/tx\.origin\s*==|require\s*\(\s*tx\.origin/],
+  C12: [/block\.timestamp(?![\s\S]{0,100}require\s*\([^)]*(?:<=|>=|<|>)[^)]*\d{4,})/, /now\s*[+\-\*]/],
+  C13: [/ecrecover\s*\((?![\s\S]{0,300}nonce|[\s\S]{0,300}chainId)/],
+  C14: [/for\s*\([^)]*\.length[^)]*\)[^{]*\{[^}]*\.transfer|\.transfer\s*\([^)]*\)[^;]*;[^}]*}/],
+  C15: [/function\s+\w+\s*\([^)]*\)\s*(?:external|public)\s*onlyOwner(?![\s\S]{0,300}timelock|[\s\S]{0,300}multisig)/],
+  C16: [/for\s*\([^;]*;\s*\w+\s*<\s*\w+\.length/],
+  C17: [/function\s+(?:transfer|mint|burn|withdraw|deposit)\s*\([^)]*\)(?![\s\S]{0,500}emit\s+)/],
+  C18: [/contract\s+\w+(?![\s\S]{0,500}Pausable|[\s\S]{0,500}pause)/],
+  C19: [/\.transfer\s*\([^)]*\)(?![^;]*require\s*\(|[^;]*bool)/, /IERC20\([^)]*\)\.transfer\s*\([^)]*\)(?![^;]*require)/],
+  C20: [/\+\+\s*\d\s*;|assembly\s*\{[^}]*sload/],
+  C21: [],
+  C22: [/pragma solidity\s*\^|pragma solidity\s*>=?[^;]*</],
+  C23: [/function\s+\w+\s*\([^)]*\)(?![\s\S]{0,50}\/\*\*|[\s\S]{0,50}\/\/\/)/],
+  G01: [/assembly\s*\{[^}]*call\b/, /bytes4\s*selector\s*=\s*bytes4\s*\(/],
+  G02: [/CREATE2|selfdestruct[\s\S]{0,500}CREATE/, /create2\s*\(/i],
+  G03: [/assembly\s*\{[^}]*selfdestruct/, /assembly\s*\{[^}]*0x55/],
+  G04: [/assembly\s*\{[^}]*jumpi/, /assembly\s*\{[^}]*jump\b/],
+  G05: [/assembly\s*\{[^}]*mstore\s*\([^)]*\w+/, /assembly\s*\{[^}]*mload/],
+  G06: [],
+  G07: [/\/\/ SPDX|pragma solidity/],
+};
+
+function scanPatterns(code, patterns) {
+  for (const rx of patterns) {
+    const m = code.match(rx);
+    if (m) return { found: true, sample: m[0].slice(0, 120) };
+  }
+  return { found: false };
+}
+
+function analyzeCode(code, checks, isContract = false) {
+  const patternMap = isContract ? CONTRACT_PATTERNS : CODE_PATTERNS;
+  const findings = checks.map(c => {
+    const pats = patternMap[c.id] || [];
+    let status = "OK", detail = "", fix = "";
+    if (pats.length === 0) {
+      status = "WARNING";
+      detail = `${c.name} — verificação manual recomendada para este padrão.`;
+      fix = c.desc;
+    } else {
+      const res = scanPatterns(code, pats);
+      if (res.found) {
+        status = "VULNERABLE";
+        detail = `Padrão detetado: \`${res.sample.replace(/\n/g, " ")}\` — ${c.desc}`;
+        fix = getFix(c.id);
+      } else {
+        status = "OK";
+        detail = `Nenhum padrão de ${c.name} detetado na análise estática.`;
+      }
+    }
+    return { id: c.id, severity: c.sev, name: c.name, status, detail, fix };
+  });
+
+  const vc = findings.filter(f => f.status === "VULNERABLE" && f.severity === "CRITICAL").length;
+  const vh = findings.filter(f => f.status === "VULNERABLE" && f.severity === "HIGH").length;
+  const vm = findings.filter(f => f.status === "VULNERABLE" && f.severity === "MEDIUM").length;
+  const score = Math.max(0, 100 - vc * 18 - vh * 10 - vm * 4);
+  const vl = findings.filter(f => f.status === "VULNERABLE").map(f => f.name);
+  const summary = vl.length === 0
+    ? `Análise estática concluída — nenhum padrão vulnerável detetado. Score: ${score}/100. Recomenda-se revisão manual para lógica de negócio.`
+    : `${vl.length} vulnerabilidade(s) detetadas: ${vl.slice(0, 5).join(", ")}${vl.length > 5 ? ` e mais ${vl.length - 5}` : ""}. Score: ${score}/100.`;
+  return { score, summary, findings };
+}
+
+function getFix(id) {
+  const fixes = {
+    V01: "Usa prepared statements/queries parametrizadas. Nunca concatenas input do utilizador em SQL.",
+    V02: "Nunca passas input externo para exec/system. Usa APIs nativas em vez de subprocessos.",
+    V03: "Não deserializas dados de fontes não confiáveis. Usa formatos seguros como JSON com validação de schema.",
+    V04: "Nunca renderizas input do utilizador como template. Usa auto-escape e renderização de valores, não de código.",
+    V05: "Valida e normaliza paths com path.resolve(). Rejeita paths que contenham '../'.",
+    V06: "Move todas as credenciais para variáveis de ambiente (.env). Roga as chaves expostas imediatamente.",
+    V07: "Desativa external entities no parser XML: setFeature(FEATURE_SECURE_PROCESSING, true).",
+    V08: "Valida chaves de objetos antes de merge. Rejeita '__proto__' e 'constructor' como chaves.",
+    V09: "Usa textContent em vez de innerHTML. Sanitiza com DOMPurify antes de qualquer renderização HTML.",
+    V10: "Valida URLs contra whitelist de domínios permitidos. Bloqueia IPs internos (169.254.x.x, 10.x.x.x, etc.).",
+    V11: "Adiciona middleware CSRF (csurf) em todas as rotas POST/PUT/DELETE.",
+    V12: "Usa bcrypt/argon2 para passwords. Usa RS256/ES256 para JWT. Nunca uses alg:none.",
+    V13: "Verifica ownership do recurso: if (resource.userId !== req.user.id) return 403.",
+    V14: "Usa regex com limites. Testa complexidade com ferramentas como safe-regex.",
+    V15: "Usa operações atômicas ou locks. Evita padrões check-then-act em recursos partilhados.",
+    V16: "Nunca usas eval() com input externo. Usa JSON.parse() para dados estruturados.",
+    V17: "Não expões stack traces ou mensagens de erro internas. Usa IDs de erro para lookup interno.",
+    V18: "Sanitiza input antes de escrever em logs. Usa loggers estruturados com campos separados.",
+    V19: "Executa 'npm audit' / 'pip-audit'. Atualiza dependências vulneráveis.",
+    V20: "Adiciona verificações de autorização explícitas em cada função que acede a recursos.",
+    V21: "Usa SHA-256+ para hashing. AES-GCM ou ChaCha20-Poly1305 para encriptação. crypto.randomBytes() para tokens.",
+    V22: "Implementa whitelist de URLs de redirect permitidas. Rejeita URLs absolutas de domínios externos.",
+    V23: "Remove logs com dados sensíveis. Usa log levels e filtra campos sensíveis.",
+    V24: "Remove console.log de dados sensíveis e declarações debugger antes de produção.",
+    V25: "Revisa timeouts e intervals com dados externos para evitar execução arbitrária.",
+    C01: "Atualiza estado ANTES de chamadas externas (Checks-Effects-Interactions). Usa ReentrancyGuard da OpenZeppelin.",
+    C02: "Adiciona modifier onlyOwner ou AccessControl a todas as funções privilegiadas.",
+    C03: "Usa Solidity ≥0.8.0 (overflow automático). Em versões antigas, usa SafeMath.",
+    C04: "Nunca usas delegatecall para endereços fornecidos pelo utilizador.",
+    C05: "Protege selfdestruct com multisig ou timelock.",
+    C06: "Valida o target e os dados do call. Usa interfaces tipadas em vez de call baixo nível.",
+    C07: "Adiciona modifier initializer (OpenZeppelin) e chama _disableInitializers() no constructor.",
+    C08: "Usa TWAP price feeds. Valida freshness com require(block.timestamp - updatedAt < MAX_DELAY).",
+    C09: "Adiciona parâmetro deadline e amountOutMin > 0 em swaps.",
+    C10: "Adiciona validação de estado antes/depois em callbacks de flash loan.",
+    C11: "Substitui tx.origin por msg.sender para autenticação.",
+    C12: "Não usas block.timestamp como fonte de aleatoriedade. Usa Chainlink VRF.",
+    C13: "Inclui nonce, chainId e endereço do contrato na mensagem assinada.",
+    C14: "Evita loops com transfers. Usa padrão pull-payment (withdraw pattern).",
+    C15: "Adiciona timelock de 24-48h ou multisig para funções críticas de owner.",
+    C16: "Limita tamanho de arrays ou usa paginação para evitar gas limit.",
+    C17: "Emite eventos em todas as funções críticas para auditabilidade on-chain.",
+    C18: "Herda de Pausable (OpenZeppelin) e adiciona whenNotPaused às funções críticas.",
+    C19: "Usa SafeERC20 da OpenZeppelin: safeTransfer() em vez de transfer().",
+    C20: "Verifica slots de storage para evitar colisões em upgradeable proxies. Usa ERC-1967.",
+    C22: "Fixa a versão do compilador: pragma solidity 0.8.20; (sem ^ ou >=).",
+    C23: "Adiciona NatSpec (@notice, @param, @return) a todas as funções públicas.",
+    G01: "Audita bytecode com Etherscan verified source ou Dedaub decompiler.",
+    G02: "Cuidado com contratos CREATE2 — podem ser reimplantados com lógica diferente.",
+    G03: "Procura SELFDESTRUCT em assembly inline que pode não aparecer no ABI.",
+    G04: "JUMPs para destinos calculados são difíceis de auditar — verifica o bytecode.",
+    G05: "Operações de memória em assembly devem ter limites explícitos.",
+  };
+  return fixes[id] || "Corrige o padrão identificado seguindo as melhores práticas OWASP.";
+}
+
 function analyzeProbe(probeData, checks) {
   const h = probeData.headers || {};
   const ssl = probeData.ssl || {};
@@ -418,7 +580,19 @@ export default function App() {
       setLoading(false); setLoadingMsg(""); return;
     }
 
-    // ── STEP 2: contract/source tabs — análise IA ─────────────────────────
+    // ── STEP 2: contract/source — análise estática local ─────────────────
+    if (tab === "source") {
+      setLoadingMsg("A ANALISAR CÓDIGO FONTE...");
+      setResults(analyzeCode(sourceCode, checks, false));
+      setLoading(false); setLoadingMsg(""); return;
+    }
+    if (tab === "contract") {
+      setLoadingMsg("A ANALISAR CONTRATO SOLIDITY...");
+      setResults(analyzeCode(contract, checks, true));
+      setLoading(false); setLoadingMsg(""); return;
+    }
+
+    // ── FALLBACK: IA (mantido para compatibilidade futura) ────────────────
     setLoadingMsg("A ANALISAR COM IA...");
 
     const probeSection = probeData ? `
