@@ -239,7 +239,7 @@ async function testSlowloris(hostname, port = 443) {
 
 // ─── HTTP methods check ──────────────────────────────────────────────────────
 async function checkMethods(url) {
-  const methods = ["OPTIONS", "PUT", "DELETE", "TRACE", "CONNECT", "PATCH"];
+  const methods = ["OPTIONS", "PUT", "DELETE", "TRACE", "PATCH"];
   const results = {};
   await Promise.all(methods.map(async (m) => {
     const r = await fetchReq(url, m, {}, 4000);
@@ -328,21 +328,25 @@ async function testCORS(baseUrl, hostname) {
 }
 
 // ─── Subdomain enumeration ────────────────────────────────────────────────────
+function dnsResolveWithTimeout(hostname, timeoutMs = 3000) {
+  return Promise.race([
+    dns.promises.resolve4(hostname).catch(() => null),
+    new Promise(resolve => setTimeout(() => resolve(null), timeoutMs)),
+  ]);
+}
+
 async function checkSubdomains(hostname) {
   const COMMON = [
-    "www","api","admin","dev","staging","test","mail","webmail","ftp","ssh",
-    "vpn","remote","portal","dashboard","app","backend","frontend","static",
-    "cdn","assets","media","img","db","sql","redis","mongo","elastic","kibana",
-    "grafana","jenkins","gitlab","git","jira","docs","wiki","beta","alpha",
-    "internal","intranet","corp","support","status","monitor","logs","s3",
+    "www","api","admin","dev","staging","test","mail","app",
+    "backend","cdn","git","docs","wiki","beta","internal","status",
   ];
 
   const results = await Promise.all(COMMON.map(async (sub) => {
     const fqdn = `${sub}.${hostname}`;
     try {
-      const addrs = await dns.promises.resolve4(fqdn).catch(() => null);
+      const addrs = await dnsResolveWithTimeout(fqdn, 2000);
       if (!addrs) return null;
-      const r = await fetchReq(`https://${fqdn}/`, "HEAD", {}, 3000);
+      const r = await fetchReq(`https://${fqdn}/`, "HEAD", {}, 2000);
       return { sub: fqdn, ips: addrs, status: r.ok ? r.status : null };
     } catch { return null; }
   }));
@@ -413,6 +417,13 @@ app.get("/api/probe", async (req, res) => {
   const base = `https://${hostname}`;
   console.log(`\n[SCAN START] ${hostname} — ${new Date().toISOString()}`);
 
+  // hard timeout — respond after 55s with whatever we have
+  const scanTimeout = new Promise(resolve => setTimeout(() => resolve("TIMEOUT"), 55000));
+
+  async function runScan() {
+  const t0 = Date.now();
+  const lap = (label) => console.log(`  [${label}] ${Date.now()-t0}ms`);
+
   // Phase 1 — all parallel probes
   const [
     getResult,
@@ -428,25 +439,27 @@ app.get("/api/probe", async (req, res) => {
     corsTest,
     openRedirect,
   ] = await Promise.all([
-    fetchReq(target, "GET", {}, 10000),
-    checkSSL(hostname),
-    checkDNS(hostname),
-    checkPaths(base),
-    fetchReq(`http://${hostname}/`, "GET", {}, 6000),
-    scanPorts(hostname),
-    testRateLimit(base, "/", 25),
-    checkMethods(target),
-    testSlowloris(hostname, 443),
-    checkSubdomains(hostname),
-    testCORS(base, hostname),
-    testOpenRedirect(base),
+    fetchReq(target, "GET", {}, 10000).then(r => { lap("GET"); return r; }),
+    checkSSL(hostname).then(r => { lap("SSL"); return r; }),
+    checkDNS(hostname).then(r => { lap("DNS"); return r; }),
+    checkPaths(base).then(r => { lap("PATHS"); return r; }),
+    fetchReq(`http://${hostname}/`, "GET", {}, 6000).then(r => { lap("HTTP"); return r; }),
+    scanPorts(hostname).then(r => { lap("PORTS"); return r; }),
+    testRateLimit(base, "/", 25).then(r => { lap("RATELIMIT"); return r; }),
+    checkMethods(target).then(r => { lap("METHODS"); return r; }),
+    testSlowloris(hostname, 443).then(r => { lap("SLOWLORIS"); return r; }),
+    checkSubdomains(hostname).then(r => { lap("SUBDOMAINS"); return r; }),
+    testCORS(base, hostname).then(r => { lap("CORS"); return r; }),
+    testOpenRedirect(base).then(r => { lap("OPENREDIRECT"); return r; }),
   ]);
+  lap("PHASE1 DONE");
 
   // Phase 2 — depends on getResult.body
   const [jsSecrets, techStack] = await Promise.all([
     scanJsSecrets(getResult.body || "", base),
     Promise.resolve(detectTech(getResult.headers || {}, getResult.body || "")),
   ]);
+  lap("PHASE2 DONE");
 
   const h = getResult.headers || {};
 
@@ -549,8 +562,16 @@ app.get("/api/probe", async (req, res) => {
     body_snippet: getResult.body ? getResult.body.slice(0, 3000) : null,
   };
 
-  console.log(`[SCAN DONE] ${hostname} — ports: ${openPorts.length} open, paths: ${exposed.length} exposed, subdomains: ${subdomains.length}, secrets: ${jsSecrets.findings.length}`);
-  res.json(report);
+    console.log(`[SCAN DONE] ${hostname} — ports: ${openPorts.length} open, paths: ${exposed.length} exposed, subdomains: ${subdomains.length}, secrets: ${jsSecrets.findings.length}`);
+    return report;
+  } // end runScan
+
+  const result = await Promise.race([runScan(), scanTimeout]);
+  if (result === "TIMEOUT") {
+    console.log(`[SCAN TIMEOUT] ${hostname}`);
+    return res.status(408).json({ error: "Scan timeout — alvo demorou demasiado a responder" });
+  }
+  res.json(result);
 });
 
 app.listen(3001, () => {
