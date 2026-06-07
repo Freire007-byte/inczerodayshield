@@ -19,6 +19,7 @@ const CATEGORIES = {
   C: { label: "CONTRATO",      color: "#0a84ff" },
   G: { label: "GHIDRA/BYTEC.", color: "#64d2ff" },
   R: { label: "RECON/OSINT",  color: "#ff375f" },
+  V: { label: "CÓDIGO FONTE", color: "#30d158" },
 };
 
 const URL_CHECKS = [
@@ -102,6 +103,34 @@ const URL_CHECKS = [
   { id:"R04", sev:"HIGH",     name:"Subdomain Takeover",   desc:"Subdomínios admin/dev/staging/internal acessíveis — superfície de ataque alargada" },
   { id:"R05", sev:"MEDIUM",   name:"Tech Stack Exposto",   desc:"Frameworks, CMS e versões detetados nos headers/HTML — facilita exploits direcionados" },
   { id:"R06", sev:"MEDIUM",   name:"Subdomínios Sensíveis",desc:"Subdomínios de infraestrutura (kibana, grafana, jenkins) acessíveis sem autenticação" },
+];
+
+const CODE_CHECKS = [
+  { id:"V01", sev:"CRITICAL", name:"SQL Injection",        desc:"Queries com string concatenation/interpolação direta de input do utilizador" },
+  { id:"V02", sev:"CRITICAL", name:"Command Injection",    desc:"exec/system/shell_exec/child_process com input não sanitizado — RCE" },
+  { id:"V03", sev:"CRITICAL", name:"Deserialização Inseg.",desc:"pickle.loads/unserialize/ObjectInputStream de fonte não confiável" },
+  { id:"V04", sev:"CRITICAL", name:"SSTI",                 desc:"Template engines com input direto — Jinja2/Twig/Pebble/Handlebars" },
+  { id:"V05", sev:"CRITICAL", name:"Path Traversal",       desc:"../.. em file paths, open/readFile com input do utilizador" },
+  { id:"V06", sev:"CRITICAL", name:"Hardcoded Secrets",    desc:"API keys, passwords, tokens, connection strings no código fonte" },
+  { id:"V07", sev:"CRITICAL", name:"XXE",                  desc:"XML parser sem disableExternalEntities — leitura de ficheiros locais" },
+  { id:"V08", sev:"CRITICAL", name:"Prototype Pollution",  desc:"Object.assign/__proto__/constructor merge sem sanitização — Node.js" },
+  { id:"V09", sev:"HIGH",     name:"XSS",                  desc:"innerHTML/document.write/eval com dados do utilizador" },
+  { id:"V10", sev:"HIGH",     name:"SSRF",                 desc:"fetch/http.get/requests.get com URL controlado pelo utilizador" },
+  { id:"V11", sev:"HIGH",     name:"CSRF",                 desc:"Rotas POST/PUT/DELETE sem verificação de token ou origin" },
+  { id:"V12", sev:"HIGH",     name:"Broken Auth",          desc:"Tokens sem expiração, validação fraca de JWT, passwords plaintext" },
+  { id:"V13", sev:"HIGH",     name:"IDOR",                 desc:"Acesso a recursos por ID sem verificação de ownership" },
+  { id:"V14", sev:"HIGH",     name:"ReDoS",                desc:"Regex com backtracking exponencial em input não limitado" },
+  { id:"V15", sev:"HIGH",     name:"Race Condition",       desc:"Operações check-then-act sem locks — TOCTOU" },
+  { id:"V16", sev:"HIGH",     name:"Eval Inseguro",        desc:"eval/exec/Function/vm.runInNewContext com input externo" },
+  { id:"V17", sev:"MEDIUM",   name:"Error Info Leak",      desc:"Stack traces, erros internos ou config expostos em respostas" },
+  { id:"V18", sev:"MEDIUM",   name:"Log Injection",        desc:"Input do utilizador em logs sem sanitização — log forging" },
+  { id:"V19", sev:"MEDIUM",   name:"Dependency Vuln",      desc:"Dependências antigas com CVEs conhecidos (npm/pip/composer)" },
+  { id:"V20", sev:"MEDIUM",   name:"Broken Access Control",desc:"Verificações de permissão ausentes em funções privilegiadas" },
+  { id:"V21", sev:"MEDIUM",   name:"Weak Crypto",          desc:"MD5/SHA1 para passwords, IV fixo, ECB mode, chaves fracas" },
+  { id:"V22", sev:"MEDIUM",   name:"Open Redirect",        desc:"Redirect para URL fornecida pelo utilizador sem whitelist" },
+  { id:"V23", sev:"LOW",      name:"Verbose Logging",      desc:"Passwords, tokens ou dados sensíveis escritos em logs" },
+  { id:"V24", sev:"LOW",      name:"Dead Code / Debug",    desc:"console.log com dados sensíveis, TODO de segurança, debugger" },
+  { id:"V25", sev:"INFO",     name:"Code Quality",         desc:"Padrões que aumentam a superfície de ataque" },
 ];
 
 const CONTRACT_CHECKS = [
@@ -219,6 +248,8 @@ export default function App() {
   const [tab, setTab]                   = useState("url");
   const [url, setUrl]                   = useState("");
   const [contract, setContract]         = useState("");
+  const [sourceCode, setSourceCode]     = useState("");
+  const [sourceLang, setSourceLang]     = useState("javascript");
   const [loading, setLoading]           = useState(false);
   const [loadingMsg, setLoadingMsg]     = useState("");
   const [results, setResults]           = useState(null);
@@ -234,12 +265,13 @@ export default function App() {
 
   function saveKey(k) { setApiKey(k); localStorage.setItem("inc_api_key", k); }
 
-  const checks = tab === "url" ? URL_CHECKS : CONTRACT_CHECKS;
+  const checks = tab === "url" ? URL_CHECKS : tab === "contract" ? CONTRACT_CHECKS : CODE_CHECKS;
 
   async function runScan() {
     if (!apiKey.trim()) { setError("Coloca a tua Anthropic API Key nas configurações (ícone da chave acima)."); return; }
     if (tab === "url" && !url.trim()) { setError("Insere uma URL ou IP para escanear."); return; }
     if (tab === "contract" && !contract.trim()) { setError("Cola o código Solidity para auditar."); return; }
+    if (tab === "source" && !sourceCode.trim()) { setError("Cola o código fonte para auditar."); return; }
 
     setError(""); setLoading(true); setResults(null); setRawProbe(null); setFilterSev("ALL");
 
@@ -383,7 +415,8 @@ Responde APENAS JSON válido sem markdown:
     "fix":"<correção concreta e acionável>"
   }]
 }`
-      : `Você é o melhor auditor de smart contracts Solidity + bytecode EVM do mundo. Analisa com modelo mental de Slither, Mythril e Ghidra.
+      : tab === "contract"
+      ? `Você é o melhor auditor de smart contracts Solidity + bytecode EVM do mundo. Analisa com modelo mental de Slither, Mythril e Ghidra.
 
 CÓDIGO:
 ${contract}
@@ -402,6 +435,36 @@ Responde APENAS JSON válido:
     "status":"<VULNERABLE|WARNING|OK>",
     "detail":"<detalhe técnico com linha/função se aplicável>",
     "fix":"<código ou correção concreta>"
+  }]
+}`
+      : `Você é o melhor especialista mundial em segurança ofensiva de código. Analisa como um pentester experiente, com o modelo mental de Semgrep, Bandit, CodeQL e revisão manual.
+
+LINGUAGEM: ${sourceLang.toUpperCase()}
+
+CÓDIGO FONTE:
+\`\`\`${sourceLang}
+${sourceCode}
+\`\`\`
+
+Analisa TODOS os ${checks.length} vetores de vulnerabilidade:
+${checks.map(c => `- ${c.id} [${c.sev}] ${c.name}: ${c.desc}`).join("\n")}
+
+REGRAS:
+- Para VULNERABLE: indica linha exata, valor do input, e payload de prova de conceito (PoC)
+- Para WARNING: indica onde pode existir vulnerabilidade dependendo do contexto
+- Para OK: confirma que a verificação foi feita e não encontraste nada
+- Se encontrares vulnerabilidades NÃO listadas nos checks, adiciona-as como findings extra com id "EX01", "EX02", etc.
+- Fornece correção de código concreta (patch diff ou substituição)
+
+Responde APENAS JSON válido:
+{
+  "score": <0-100, onde 100 é código completamente seguro>,
+  "summary": "<resumo técnico executivo — quais as vulnerabilidades críticas encontradas e superfície de ataque>",
+  "findings": [{
+    "id":"<ID>","severity":"<CRITICAL|HIGH|MEDIUM|LOW|INFO>","name":"<nome>",
+    "status":"<VULNERABLE|WARNING|OK>",
+    "detail":"<linha exacta, payload PoC, contexto de exploração>",
+    "fix":"<patch de código concreto e testável>"
   }]
 }`;
 
@@ -503,8 +566,9 @@ Responde APENAS JSON válido:
           {/* tabs */}
           <div style={{ display:"flex", gap:6, maxWidth:700, margin:"0 auto 14px" }}>
             {[
-              {k:"url",      l:`SERVIDOR / IP  (${URL_CHECKS.length} checks + scan real)`},
-              {k:"contract", l:`CONTRATO SOLIDITY (${CONTRACT_CHECKS.length} checks)`},
+              {k:"url",      l:`SERVIDOR / IP  (${URL_CHECKS.length})`},
+              {k:"source",   l:`CÓDIGO FONTE  (${CODE_CHECKS.length})`},
+              {k:"contract", l:`SOLIDITY  (${CONTRACT_CHECKS.length})`},
             ].map(t => (
               <button key={t.k} onClick={() => { setTab(t.k); setResults(null); setError(""); }}
                 style={{ ...S.btn(tab===t.k?"#0a84ff":"#0d0d1a", tab===t.k?"none":"1px solid #1a1a3a",
@@ -521,12 +585,40 @@ Responde APENAS JSON válido:
                 <label style={{ fontSize:10, color:"#0a84ff", letterSpacing:2, display:"block", marginBottom:6 }}>
                   URL / IP / DOMÍNIO ALVO
                 </label>
-                <input value={url} onChange={e => setUrl(e.target.value)}
-                  onKeyDown={e => e.key==="Enter" && runScan()}
-                  placeholder="https://incnetwork.online  ou  185.123.45.67"
-                  style={{ ...S.input, fontSize:14 }} />
-                <div style={{ fontSize:10, color:"#333", marginTop:5, letterSpacing:1 }}>
-                  O scanner testa headers HTTP, SSL, DNS, paths expostos e feeds dados reais ao Claude
+                <div style={{ display:"flex", gap:8, marginBottom:6 }}>
+                  <input value={url} onChange={e => setUrl(e.target.value)}
+                    onKeyDown={e => e.key==="Enter" && runScan()}
+                    placeholder="https://incnetwork.online  ou  185.123.45.67"
+                    style={{ ...S.input, fontSize:14, flex:1 }} />
+                  <button onClick={() => setUrl("https://incnetwork.online")}
+                    style={{ ...S.btn("#0d1a0d","1px solid #30d15840","#30d158"), padding:"12px 10px", fontSize:10, whiteSpace:"nowrap" }}>
+                    TESTAR INC
+                  </button>
+                </div>
+                <div style={{ fontSize:10, color:"#333", letterSpacing:1 }}>
+                  Testa headers, SSL, DNS, portas, paths, JS secrets, CORS, subdomínios, open redirect, tech stack
+                </div>
+              </>
+            ) : tab === "source" ? (
+              <>
+                <label style={{ fontSize:10, color:"#30d158", letterSpacing:2, display:"block", marginBottom:6 }}>
+                  AUDITORIA DE CÓDIGO FONTE — {CODE_CHECKS.length} CHECKS
+                </label>
+                <div style={{ display:"flex", gap:6, marginBottom:8, flexWrap:"wrap" }}>
+                  {["javascript","typescript","python","php","java","go","rust","solidity","bash","sql"].map(lang => (
+                    <button key={lang} onClick={() => setSourceLang(lang)} style={{
+                      padding:"3px 8px", borderRadius:3, cursor:"pointer", fontFamily:"monospace", fontSize:10,
+                      border: sourceLang===lang?"1px solid #30d158":"1px solid #1a1a2e",
+                      background: sourceLang===lang?"#001a08":"#0d0d1a",
+                      color: sourceLang===lang?"#30d158":"#555",
+                    }}>{lang}</button>
+                  ))}
+                </div>
+                <textarea value={sourceCode} onChange={e => setSourceCode(e.target.value)}
+                  placeholder={"// Cola aqui o código a auditar (qualquer linguagem)\n// O scanner identifica: SQLi, XSS, RCE, SSRF, secrets, IDOR, path traversal...\n\nconst query = `SELECT * FROM users WHERE id = ${req.params.id}`;\n// ↑ SQL Injection óbvio — exemplo de vulnerabilidade"}
+                  rows={14} style={{ ...S.input, fontSize:12, resize:"vertical", lineHeight:1.6 }} />
+                <div style={{ fontSize:10, color:"#333", marginTop:4, letterSpacing:1 }}>
+                  25 vetores · SQLi · RCE · XSS · SSRF · Path Traversal · Secrets · IDOR · ReDoS · Race Condition
                 </div>
               </>
             ) : (
@@ -553,7 +645,7 @@ Responde APENAS JSON válido:
                 loading ? "1px solid #1a1a3a" : "none",
                 loading ? "#555" : "#fff"
               ), width:"100%", marginTop:10, padding:"14px 0", fontSize:13 }}>
-              {loading ? loadingMsg || "A PROCESSAR..." : `INICIAR SCAN REAL — ${checks.length} CHECKS`}
+              {loading ? loadingMsg || "A PROCESSAR..." : tab === "source" ? `AUDITAR CÓDIGO — ${checks.length} VETORES` : `INICIAR SCAN REAL — ${checks.length} CHECKS`}
             </button>
           </div>
 
@@ -562,7 +654,7 @@ Responde APENAS JSON válido:
             <div style={{ maxWidth:700, margin:"0 auto" }}>
               <div style={{ display:"flex", flexWrap:"wrap", gap:5, marginBottom:12, justifyContent:"center" }}>
                 {Object.entries(CATEGORIES)
-                  .filter(([k]) => tab==="url" ? !["C","G"].includes(k) : ["C","G"].includes(k) && k !== "R")
+                  .filter(([k]) => tab==="url" ? !["C","G","V"].includes(k) : tab==="source" ? k==="V" : ["C","G"].includes(k))
                   .map(([k,v]) => (
                     <span key={k} style={{ fontSize:10, color:v.color, border:`1px solid ${v.color}40`,
                       borderRadius:4, padding:"2px 8px" }}>{v.label}</span>
@@ -590,7 +682,7 @@ Responde APENAS JSON válido:
             <div style={{ textAlign:"center", padding:40 }}>
               <div style={{ color:"#0a84ff", fontSize:13, letterSpacing:3 }}>{loadingMsg}</div>
               <div style={{ color:"#444", fontSize:11, marginTop:8 }}>
-                {tab==="url" ? "A testar headers, SSL, DNS, paths expostos..." : `A analisar ${checks.length} vetores de ataque...`}
+                {tab==="url" ? "A testar headers, SSL, DNS, JS secrets, subdomínios..." : tab==="source" ? `A analisar ${checks.length} vetores no código fonte (SQLi, RCE, XSS, SSRF...)` : `A analisar ${checks.length} vetores de ataque no contrato...`}
               </div>
             </div>
           )}
@@ -674,7 +766,7 @@ Responde APENAS JSON válido:
                 })}
               </div>
 
-              <button onClick={() => { setResults(null); setRawProbe(null); setUrl(""); setContract(""); setFilterSev("ALL"); }}
+              <button onClick={() => { setResults(null); setRawProbe(null); setUrl(""); setContract(""); setSourceCode(""); setFilterSev("ALL"); }}
                 style={{ ...S.btn("#0d0d1a","1px solid #1a1a3a","#555"), width:"100%", marginTop:16, padding:"12px 0" }}>
                 NOVO SCAN
               </button>
